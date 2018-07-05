@@ -528,7 +528,9 @@ class XUniqueExit(SystemExit):
         super(XUniqueExit, self).__init__(value)
 
 
+# 程序入口。
 def main():
+	# 配置命令行参数解析。
     usage = "usage: %prog [-v][-u][-s][-c][-p] path/to/Project.xcodeproj"
     description = "Doc: https://github.com/truebit/xUnique"
     parser = OptionParser(usage=usage, description=description)
@@ -543,32 +545,43 @@ def main():
                       help="When project file was modified, xUnique quit with non-zero status. Without this option, the status code would be zero if so. This option is usually used in Git hook to submit xUnique result combined with your original new commit.")
     parser.add_option("-p", "--sort-pbx-by-filename", action="store_true", dest="sort_pbx_fn_bool", default=False,
                       help="sort PBXFileReference and PBXBuildFile sections in project file, ordered by file name. Without this option, ordered by MD5 digest, the same as Xcode does.")
+    
+    # 解析选项和参数。
     (options, args) = parser.parse_args(sys_argv[1:])
+    
+    # 如果没有参数，输出帮助信息并提示错误。
     if len(args) < 1:
         parser.print_help()
-        raise XUniqueExit(
-            "xUnique requires at least one positional argument: relative/absolute path to xcodeproj.")
+        raise XUniqueExit("xUnique requires at least one positional argument: relative/absolute path to xcodeproj.")
+    
+    # 以第一个参数作为文件路径，配置XUnique工具类。
     xcode_proj_path = decoded_string(args[0])
     xunique = XUnique(xcode_proj_path, options.verbose)
-    if not (options.unique_bool or options.sort_bool):
-        print_ng("Uniquify and Sort")
-        xunique.unique_project()
-        xunique.sort_pbxproj(options.sort_pbx_fn_bool)
-        success_print("Uniquify and Sort done")
-    else:
-        if options.unique_bool:
+    
+    # 根据-u和-s选项的开关配置决定采用功能。
+    if options.unique_bool:
+        if options.sort_bool:
+            print_ng("Uniquify and Sort")
+            xunique.unique_project()
+            xunique.sort_pbxproj(options.sort_pbx_fn_bool)
+        else:
             print_ng('Uniquify...')
             xunique.unique_project()
+    else:
         if options.sort_bool:
             print_ng('Sort...')
             xunique.sort_pbxproj(options.sort_pbx_fn_bool)
-    if options.combine_commit:
-        if xunique.is_modified:
+        else:
+            print_ng("Uniquify and Sort")
+            xunique.unique_project()
+            xunique.sort_pbxproj(options.sort_pbx_fn_bool)
+    
+    # 如果文件发生改变，根距-c选项的开关决定是仅仅打印提示还是非正常退出。
+    if xunique.is_modified:
+        if options.combine_commit:
             raise XUniqueExit("File 'project.pbxproj' was modified, please add it and then commit.")
-    else:
-        if xunique.is_modified:
-            warning_print(
-                "File 'project.pbxproj' was modified, please add it and commit again to submit xUnique result.\nNOTICE: If you want to submit xUnique result combined with original commit, use option '-c' in command.")
+        else:
+            warning_print("File 'project.pbxproj' was modified, please add it and commit again to submit xUnique result.\nNOTICE: If you want to submit xUnique result combined with original commit, use option '-c' in command.")
 
 
 if __name__ == '__main__':
