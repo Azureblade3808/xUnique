@@ -98,42 +98,51 @@ def success_print(*args, **kwargs):
 
 # 工具类。
 class XUnique(object):
+    # 构造方法。
     def __init__(self, target_path, verbose=False):
-        # check project path
+        # 获取绝对路径。
         abs_target_path = path.abspath(target_path)
+        
+        # 如果文件不存在，报错。
         if not path.exists(abs_target_path):
             raise XUniqueExit('Path "',abs_target_path ,'" not found!')
-        elif abs_target_path.endswith('xcodeproj'):
+        # 如果文件以.xcodeproj结尾，表示指定了工程包，工程文件是这个包内的project.pbxproj。
+        elif abs_target_path.endswith('.xcodeproj'):
             self.xcodeproj_path = abs_target_path
             self.xcode_pbxproj_path = path.join(abs_target_path, 'project.pbxproj')
+        # 如果文件名是project.pbxproj，表示指定了工程文件，工程包是这个文件的所在目录。
         elif abs_target_path.endswith('project.pbxproj'):
             self.xcode_pbxproj_path = abs_target_path
             self.xcodeproj_path = path.dirname(self.xcode_pbxproj_path)
+        # 其他后缀视为非法，报错。
         else:
             raise XUniqueExit("Path must be dir '.xcodeproj' or file 'project.pbxproj'")
+        
         self.verbose = verbose
-        self.vprint = print if self.verbose else lambda *a, **k: None
+        self.vprint = print if verbose else lambda *a, **k: None
         self.proj_root = self.get_proj_root()
         self.proj_json = self.pbxproj_to_json()
         self.nodes = self.proj_json['objects']
         self.root_hex = self.proj_json['rootObject']
         self.root_node = self.nodes[self.root_hex]
         self.main_group_hex = self.root_node['mainGroup']
-        self.__result = {}
-        # initialize root content
-        self.__result.update(
-            {
-                self.root_hex: {'path': self.proj_root,
-                                'new_key': md5_hex(self.proj_root),
-                                'type': self.root_node['isa']
-                                }
-            })
+        
+        self.__result = {
+            self.root_hex: {
+                'path': self.proj_root,
+                'new_key': md5_hex(self.proj_root),
+                'type': self.root_node['isa']
+            }
+        }
+        
         self._is_modified = False
-
+    
+    
     @property
     def is_modified(self):
         return self._is_modified
-
+    
+    
     def pbxproj_to_json(self):
         pbproj_to_json_cmd = ['plutil', '-convert', 'json', '-o', '-', self.xcode_pbxproj_path]
         try:
