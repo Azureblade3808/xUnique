@@ -182,7 +182,8 @@ class XUnique(object):
             json_unicode_str = decoded_string(sp_co(pbproj_to_json_cmd))
             return json_loads(json_unicode_str)
         except CalledProcessError as cpe:
-            raise XUniqueExit("""{}
+            raise XUniqueExit(
+                """{}
 Please check:
 1. You have installed Xcode Command Line Tools and command 'plutil' could be found in $PATH;
 2. The project file is not broken, such like merge conflicts, incomplete content due to xUnique failure. """
