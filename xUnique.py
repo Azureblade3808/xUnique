@@ -18,6 +18,8 @@ License for the specific language governing permissions and limitations under
 the License.
 """
 
+
+# 导入依赖。
 from __future__ import unicode_literals
 from __future__ import print_function
 from subprocess import (check_output as sp_co, CalledProcessError)
@@ -32,6 +34,7 @@ from filecmp import cmp as filecmp_cmp
 from optparse import OptionParser
 
 
+# 兼容Python2和Python3。
 def construct_compatibility_layer():
     if version_info.major == 3:
         class SixPython3Impl(object):
@@ -51,25 +54,33 @@ def construct_compatibility_layer():
         return SixPython2Impl
     else:
         raise XUniqueExit("unsupported python version")
-
-
 six = construct_compatibility_layer()
 
+
+# 将指定字符串以UTF-8编码后得到其大写的MD5编码。
 md5_hex = lambda a_str: hl_md5(a_str.encode('utf-8')).hexdigest().upper()
+
+
+# print_ng: 以系统字符集输出。
+# output_u8line: 以UTF-8字符集输出。
 if six.PY2:
     print_ng = lambda *args, **kwargs: print(*[six.text_type(i).encode(sys_get_fs_encoding()) for i in args], **kwargs)
     output_u8line = lambda *args: print(*[six.text_type(i).encode('utf-8') for i in args], end='')
 elif six.PY3:
     print_ng = lambda *args, **kwargs: print(*args, **kwargs)
     output_u8line = lambda *args: print(*args, end='')
+else:
+    assert false
 
 
+# 解码成当前版本Python使用的字符串。
 def decoded_string(string, encoding=None):
     if isinstance(string, six.text_type):
         return string
     return string.decode(encoding or sys_get_fs_encoding())
 
 
+# 打印警告信息（红色文字）。
 def warning_print(*args, **kwargs):
     new_args = list(args)
     new_args[0] = '\x1B[33m{}'.format(new_args[0])
@@ -77,6 +88,7 @@ def warning_print(*args, **kwargs):
     print_ng(*new_args, **kwargs)
 
 
+# 打印成功信息（黄色文字）。
 def success_print(*args, **kwargs):
     new_args = list(args)
     new_args[0] = '\x1B[32m{}'.format(new_args[0])
@@ -84,6 +96,7 @@ def success_print(*args, **kwargs):
     print_ng(*new_args, **kwargs)
 
 
+# 工具类。
 class XUnique(object):
     def __init__(self, target_path, verbose=False):
         # check project path
