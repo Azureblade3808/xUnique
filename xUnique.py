@@ -118,15 +118,31 @@ class XUnique(object):
         else:
             raise XUniqueExit("Path must be dir '.xcodeproj' or file 'project.pbxproj'")
         
+        # 是否开启输出细节。
         self.verbose = verbose
+        
+        # 打印细节（根据是否开始输出细节来决定实际上是否会打印）。
         self.vprint = print if verbose else lambda *a, **k: None
+        
+        # 文件路径的基础（用于计算文件MD5时拼接文件路径）
         self.proj_root = self.get_proj_root()
+        
+        # 工程文件转化成的JSON。
         self.proj_json = self.pbxproj_to_json()
+        
+        # 工程内的各个节点的表，键为工程范围的唯一ID。
         self.nodes = self.proj_json['objects']
+        
+        # 根节点ID。
         self.root_hex = self.proj_json['rootObject']
+        
+        # 根节点。
         self.root_node = self.nodes[self.root_hex]
+        
+        # 最外层的组（即代表整个工程的组）。
         self.main_group_hex = self.root_node['mainGroup']
         
+        # 修正后的结果，初始化时只有空的根节点。
         self.__result = {
             self.root_hex: {
                 'path': self.proj_root,
@@ -135,14 +151,31 @@ class XUnique(object):
             }
         }
         
+        # 是否发生改动。
         self._is_modified = False
     
     
-    @property
-    def is_modified(self):
-        return self._is_modified
+    # 获取文件路径的基础（用于计算文件MD5时拼接文件路径）。
+    def get_proj_root(self):
+    	# 匹配含有<- PBXProject "..." ->的行，捕捉双引号内的内容，即工程名称。
+        pbxproject_ptn = re_compile('(?<=PBXProject ").*(?=")')
+        
+        # 遍历整个文件，找到工程名称，在后面加上.xcodeproj作为返回值。
+        with open(self.xcode_pbxproj_path) as pbxproj_file:
+            for line in pbxproj_file:
+                line = decoded_string(line, 'utf-8')
+                result = pbxproject_ptn.search(line)
+                if result:
+                    return '{}.xcodeproj'.format(result.group())
+        
+        # 如果没有找到匹配的行，说明文件格式有误。
+        if 'Pods.xcodeproj' in self.xcode_pbxproj_path:
+            raise XUniqueExit("Pods project file should be in ASCII format, but Cocoapods converted Pods project file to XML by default. Install 'xcproj' in your $PATH via brew to fix.")
+        else:
+            raise XUniqueExit("File 'project.pbxproj' is broken. Cannot find PBXProject name.")
     
     
+    # 获取工程文件转化成的JSON。
     def pbxproj_to_json(self):
         pbproj_to_json_cmd = ['plutil', '-convert', 'json', '-o', '-', self.xcode_pbxproj_path]
         try:
@@ -152,9 +185,17 @@ class XUnique(object):
             raise XUniqueExit("""{}
 Please check:
 1. You have installed Xcode Command Line Tools and command 'plutil' could be found in $PATH;
-2. The project file is not broken, such like merge conflicts, incomplete content due to xUnique failure. """.format(
-                cpe.output))
-
+2. The project file is not broken, such like merge conflicts, incomplete content due to xUnique failure. """
+                .format(cpe.output)
+            )
+    
+    
+    # 是否发生改动。
+    @property
+    def is_modified(self):
+        return self._is_modified
+    
+    
     def __set_to_result(self, parent_hex, current_hex, current_path_key):
         current_node = self.nodes[current_hex]
         isa_type = current_node['isa']
@@ -176,23 +217,6 @@ Please check:
                           }
         })
         return new_key
-
-    def get_proj_root(self):
-        """PBXProject name,the root node"""
-        pbxproject_ptn = re_compile('(?<=PBXProject ").*(?=")')
-        with open(self.xcode_pbxproj_path) as pbxproj_file:
-            for line in pbxproj_file:
-                # project.pbxproj is an utf-8 encoded file
-                line = decoded_string(line, 'utf-8')
-                result = pbxproject_ptn.search(line)
-                if result:
-                    # Backward compatibility using suffix
-                    return '{}.xcodeproj'.format(result.group())
-        # project file must be in ASCII format
-        if 'Pods.xcodeproj' in self.xcode_pbxproj_path:
-            raise XUniqueExit("Pods project file should be in ASCII format, but Cocoapods converted Pods project file to XML by default. Install 'xcproj' in your $PATH via brew to fix.")
-        else:
-            raise XUniqueExit("File 'project.pbxproj' is broken. Cannot find PBXProject name.")
 
     def unique_project(self):
         """iterate all nodes in pbxproj file:
