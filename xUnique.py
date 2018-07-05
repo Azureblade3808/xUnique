@@ -218,31 +218,231 @@ Please check:
                           }
         })
         return new_key
-
+    
+    
+    # 在整个工程内，令各种节点ID唯一化（替换为由路径生成的MD5字符串）。
     def unique_project(self):
-        """iterate all nodes in pbxproj file:
-
-        PBXProject
-        XCConfigurationList
-        PBXNativeTarget
-        PBXTargetDependency
-        PBXContainerItemProxy
-        XCBuildConfiguration
-        PBX*BuildPhase
-        PBXBuildFile
-        PBXReferenceProxy
-        PBXFileReference
-        PBXGroup
-        PBXVariantGroup
-        """
+        # 遍历以下类型的节点：
+        # PBXProject
+        # XCConfigurationList
+        # PBXNativeTarget
+        # PBXTargetDependency
+        # PBXContainerItemProxy
+        # XCBuildConfiguration
+        # PBX*BuildPhase
+        # PBXBuildFile
+        # PBXReferenceProxy
+        # PBXFileReference
+        # PBXGroup
+        # PBXVariantGroup
+        
+        # 从根节点出发。
         self.__unique_project(self.root_hex)
+        
         if self.verbose:
             debug_result_file_path = path.join(self.xcodeproj_path, 'debug_result.json')
             with open(debug_result_file_path, 'w') as debug_result_file:
                 json_dump(self.__result, debug_result_file)
             warning_print("Debug result json file has been written to '", debug_result_file_path, sep='')
+        
         self.substitute_old_keys()
-
+    
+    
+    # 使工程节点ID唯一化。
+    def __unique_project(self, project_hex):
+        """PBXProject. It is root itself, no parents to it"""
+        self.vprint('uniquify PBXProject')
+        self.vprint('uniquify PBX*Group and PBX*Reference*')
+        self.__unique_group_or_ref(project_hex, self.main_group_hex)
+        self.vprint('uniquify XCConfigurationList')
+        bcl_hex = self.root_node['buildConfigurationList']
+        self.__unique_build_configuration_list(project_hex, bcl_hex)
+        subprojects_list = self.root_node.get('projectReferences')
+        if subprojects_list:
+            self.vprint('uniquify Subprojects')
+            for subproject_dict in subprojects_list:
+                product_group_hex = subproject_dict['ProductGroup']
+                project_ref_parent_hex = subproject_dict['ProjectRef']
+                self.__unique_group_or_ref(project_ref_parent_hex, product_group_hex)
+        targets_list = self.root_node['targets']
+        # workaround for PBXTargetDependency referring target that have not been iterated
+        for target_hex in targets_list:
+            cur_path_key = ('productName', 'name')
+            self.__set_to_result(project_hex, target_hex, cur_path_key)
+        for target_hex in targets_list:
+            self.__unique_target(target_hex)
+    
+    
+    # 令编译配置列表节点ID唯一化。
+    def __unique_build_configuration_list(self, parent_hex, build_configuration_list_hex):
+        """XCConfigurationList"""
+        cur_path_key = 'defaultConfigurationName'
+        self.__set_to_result(parent_hex, build_configuration_list_hex, cur_path_key)
+        build_configuration_list_node = self.nodes[build_configuration_list_hex]
+        self.vprint('uniquify XCConfiguration')
+        for build_configuration_hex in build_configuration_list_node['buildConfigurations']:
+            self.__unique_build_configuration(build_configuration_list_hex, build_configuration_hex)
+    
+    
+    # 令编译配置节点ID唯一化。
+    def __unique_build_configuration(self, parent_hex, build_configuration_hex):
+        """XCBuildConfiguration"""
+        cur_path_key = 'name'
+        self.__set_to_result(parent_hex, build_configuration_hex, cur_path_key)
+    
+    
+    # 令编译目标节点ID唯一化。
+    def __unique_target(self, target_hex):
+        """PBXNativeTarget PBXAggregateTarget"""
+        self.vprint('uniquify PBX*Target')
+        current_node = self.nodes[target_hex]
+        bcl_hex = current_node['buildConfigurationList']
+        self.__unique_build_configuration_list(target_hex, bcl_hex)
+        dependencies_list = current_node.get('dependencies')
+        if dependencies_list:
+            self.vprint('uniquify PBXTargetDependency')
+            for dependency_hex in dependencies_list:
+                self.__unique_target_dependency(target_hex, dependency_hex)
+        build_phases_list = current_node['buildPhases']
+        for build_phase_hex in build_phases_list:
+            self.__unique_build_phase(target_hex, build_phase_hex)
+        build_rules_list = current_node.get('buildRules')
+        if build_rules_list:
+            for build_rule_hex in build_rules_list:
+                self.__unique_build_rules(target_hex, build_rule_hex)
+    
+    
+    # 令目标依赖节点ID唯一化。
+    def __unique_target_dependency(self, parent_hex, target_dependency_hex):
+        """PBXTargetDependency"""
+        target_hex = self.nodes[target_dependency_hex].get('target')
+        if target_hex:
+            self.__set_to_result(parent_hex, target_dependency_hex, self.__result[target_hex]['path'])
+        else:
+            self.__set_to_result(parent_hex, target_dependency_hex, 'name')
+        target_proxy = self.nodes[target_dependency_hex].get('targetProxy')
+        if target_proxy:
+            self.__unique_container_item_proxy(target_dependency_hex, target_proxy)
+        else:
+            raise XUniqueExit('PBXTargetDependency item "', target_dependency_hex,
+                              '" is invalid due to lack of "targetProxy" attribute')
+    
+    
+    # 令容器项代理（这是啥???）节点ID唯一化。
+    def __unique_container_item_proxy(self, parent_hex, container_item_proxy_hex):
+        """PBXContainerItemProxy"""
+        self.vprint('uniquify PBXContainerItemProxy')
+        new_container_item_proxy_hex = self.__set_to_result(parent_hex, container_item_proxy_hex, ('isa', 'remoteInfo'))
+        cur_path = self.__result[container_item_proxy_hex]['path']
+        current_node = self.nodes[container_item_proxy_hex]
+        # re-calculate remoteGlobalIDString to a new length 32 MD5 digest
+        remote_global_id_hex = current_node.get('remoteGlobalIDString')
+        if not remote_global_id_hex:
+            self.__result.setdefault('uniquify_warning', []).append(
+                "PBXTargetDependency '{}' and its child PBXContainerItemProxy '{}' are not needed anymore, please remove their sections manually".format(
+                    self.__result[parent_hex]['new_key'], new_container_item_proxy_hex))
+        elif remote_global_id_hex not in self.__result.keys():
+            portal_hex = current_node['containerPortal']
+            portal_result_hex = self.__result.get(portal_hex)
+            if not portal_result_hex:
+                self.__result.setdefault('uniquify_warning', []).append(
+                    "PBXTargetDependency '{}' and its child PBXContainerItemProxy '{}' are not needed anymore, please remove their sections manually".format(
+                        self.__result[parent_hex]['new_key'], new_container_item_proxy_hex))
+            else:
+                portal_path = portal_result_hex['path']
+                new_rg_id_path = '{}+{}'.format(cur_path, portal_path)
+                self.__result.update({
+                    remote_global_id_hex: {'path': new_rg_id_path,
+                                           'new_key': md5_hex(new_rg_id_path),
+                                           'type': '{}#{}'.format(self.nodes[container_item_proxy_hex]['isa'],
+                                                                  'remoteGlobalIDString')
+                                           }
+                })
+    
+    
+    # 令编译阶段节点ID唯一化。
+    def __unique_build_phase(self, parent_hex, build_phase_hex):
+        """PBXSourcesBuildPhase PBXFrameworksBuildPhase PBXResourcesBuildPhase
+        PBXCopyFilesBuildPhase PBXHeadersBuildPhase PBXShellScriptBuildPhase
+        """
+        self.vprint('uniquify all kinds of PBX*BuildPhase')
+        current_node = self.nodes[build_phase_hex]
+        # no useful key in some build phase types, use its isa value
+        bp_type = current_node['isa']
+        if bp_type == 'PBXShellScriptBuildPhase':
+            cur_path_key = 'shellScript'
+        elif bp_type == 'PBXCopyFilesBuildPhase':
+            cur_path_key = ['name', 'dstSubfolderSpec', 'dstPath']
+            if not current_node.get('name'):
+                del cur_path_key[0]
+        else:
+            cur_path_key = bp_type
+        self.__set_to_result(parent_hex, build_phase_hex, cur_path_key)
+        self.vprint('uniquify PBXBuildFile')
+        for build_file_hex in current_node['files']:
+            self.__unique_build_file(build_phase_hex, build_file_hex)
+    
+    
+    # 令组或引用节点ID唯一化。
+    def __unique_group_or_ref(self, parent_hex, group_ref_hex):
+        """PBXFileReference PBXGroup PBXVariantGroup PBXReferenceProxy"""
+        if self.nodes.get(group_ref_hex):
+            current_hex = group_ref_hex
+            if self.nodes[current_hex].get('name'):
+                cur_path_key = 'name'
+            elif self.nodes[current_hex].get('path'):
+                cur_path_key = 'path'
+            else:
+                # root PBXGroup has neither path nor name, give a new name 'PBXRootGroup'
+                cur_path_key = 'PBXRootGroup'
+            self.__set_to_result(parent_hex, current_hex, cur_path_key)
+            if self.nodes[current_hex].get('children'):
+                for child_hex in self.nodes[current_hex]['children']:
+                    self.__unique_group_or_ref(current_hex, child_hex)
+            if self.nodes[current_hex]['isa'] == 'PBXReferenceProxy':
+                self.__unique_container_item_proxy(parent_hex, self.nodes[current_hex]['remoteRef'])
+        else:
+            self.vprint("Group/FileReference/ReferenceProxy '", group_ref_hex, "' not found, it will be removed.")
+            self.__result.setdefault('to_be_removed', []).append(group_ref_hex)
+    
+    
+    # 令文件节点ID唯一化。
+    def __unique_build_file(self, parent_hex, build_file_hex):
+        """PBXBuildFile"""
+        current_node = self.nodes.get(build_file_hex)
+        if not current_node:
+            self.__result.setdefault('to_be_removed', []).append(build_file_hex)
+        else:
+            file_ref_hex = current_node.get('fileRef')
+            if not file_ref_hex:
+                self.vprint("PBXFileReference '", file_ref_hex, "' not found, it will be removed.")
+                self.__result.setdefault('to_be_removed', []).append(build_file_hex)
+            else:
+                if self.__result.get(file_ref_hex):
+                    cur_path_key = self.__result[file_ref_hex]['path']
+                    self.__set_to_result(parent_hex, build_file_hex, cur_path_key)
+                else:
+                    self.vprint("PBXFileReference '", file_ref_hex, "' not found in PBXBuildFile '", build_file_hex,
+                                "'. To be removed.", sep='')
+                    self.__result.setdefault('to_be_removed', []).extend((build_file_hex, file_ref_hex))
+    
+    
+    # 令编译规则节点ID唯一化。
+    def __unique_build_rules(self, parent_hex, build_rule_hex):
+        """PBXBuildRule"""
+        current_node = self.nodes.get(build_rule_hex)
+        if not current_node:
+            self.vprint("PBXBuildRule '", current_node, "' not found, it will be removed.")
+            self.__result.setdefault('to_be_removed', []).append(build_rule_hex)
+        else:
+            file_type = current_node['fileType']
+            cur_path_key = 'fileType'
+            if file_type == 'pattern.proxy':
+                cur_path_key = ('fileType', 'filePatterns')
+            self.__set_to_result(parent_hex, build_rule_hex, cur_path_key)
+    
+    
+    # 替换ID。
     def substitute_old_keys(self):
         self.vprint('replace UUIDs and remove unused UUIDs')
         key_ptn = re_compile('(?<=\s)([0-9A-Z]{24}|[0-9A-F]{32})(?=[\s;])')
@@ -284,7 +484,9 @@ Please check:
             if removed_lines:
                 warning_print('Following lines were deleted because of invalid format or no longer being used:')
                 print_ng(*removed_lines, end='')
-
+    
+    
+    # 将节点排序。
     def sort_pbxproj(self, sort_pbx_by_file_name=False):
         self.vprint('sort project.xpbproj file')
         lines = []
@@ -392,180 +594,6 @@ Please check:
             if removed_lines:
                 warning_print('Following lines were deleted because of duplication:')
                 print_ng(*removed_lines, end='')
-
-    def __unique_project(self, project_hex):
-        """PBXProject. It is root itself, no parents to it"""
-        self.vprint('uniquify PBXProject')
-        self.vprint('uniquify PBX*Group and PBX*Reference*')
-        self.__unique_group_or_ref(project_hex, self.main_group_hex)
-        self.vprint('uniquify XCConfigurationList')
-        bcl_hex = self.root_node['buildConfigurationList']
-        self.__unique_build_configuration_list(project_hex, bcl_hex)
-        subprojects_list = self.root_node.get('projectReferences')
-        if subprojects_list:
-            self.vprint('uniquify Subprojects')
-            for subproject_dict in subprojects_list:
-                product_group_hex = subproject_dict['ProductGroup']
-                project_ref_parent_hex = subproject_dict['ProjectRef']
-                self.__unique_group_or_ref(project_ref_parent_hex, product_group_hex)
-        targets_list = self.root_node['targets']
-        # workaround for PBXTargetDependency referring target that have not been iterated
-        for target_hex in targets_list:
-            cur_path_key = ('productName', 'name')
-            self.__set_to_result(project_hex, target_hex, cur_path_key)
-        for target_hex in targets_list:
-            self.__unique_target(target_hex)
-
-    def __unique_build_configuration_list(self, parent_hex, build_configuration_list_hex):
-        """XCConfigurationList"""
-        cur_path_key = 'defaultConfigurationName'
-        self.__set_to_result(parent_hex, build_configuration_list_hex, cur_path_key)
-        build_configuration_list_node = self.nodes[build_configuration_list_hex]
-        self.vprint('uniquify XCConfiguration')
-        for build_configuration_hex in build_configuration_list_node['buildConfigurations']:
-            self.__unique_build_configuration(build_configuration_list_hex, build_configuration_hex)
-
-    def __unique_build_configuration(self, parent_hex, build_configuration_hex):
-        """XCBuildConfiguration"""
-        cur_path_key = 'name'
-        self.__set_to_result(parent_hex, build_configuration_hex, cur_path_key)
-
-    def __unique_target(self, target_hex):
-        """PBXNativeTarget PBXAggregateTarget"""
-        self.vprint('uniquify PBX*Target')
-        current_node = self.nodes[target_hex]
-        bcl_hex = current_node['buildConfigurationList']
-        self.__unique_build_configuration_list(target_hex, bcl_hex)
-        dependencies_list = current_node.get('dependencies')
-        if dependencies_list:
-            self.vprint('uniquify PBXTargetDependency')
-            for dependency_hex in dependencies_list:
-                self.__unique_target_dependency(target_hex, dependency_hex)
-        build_phases_list = current_node['buildPhases']
-        for build_phase_hex in build_phases_list:
-            self.__unique_build_phase(target_hex, build_phase_hex)
-        build_rules_list = current_node.get('buildRules')
-        if build_rules_list:
-            for build_rule_hex in build_rules_list:
-                self.__unique_build_rules(target_hex, build_rule_hex)
-
-    def __unique_target_dependency(self, parent_hex, target_dependency_hex):
-        """PBXTargetDependency"""
-        target_hex = self.nodes[target_dependency_hex].get('target')
-        if target_hex:
-            self.__set_to_result(parent_hex, target_dependency_hex, self.__result[target_hex]['path'])
-        else:
-            self.__set_to_result(parent_hex, target_dependency_hex, 'name')
-        target_proxy = self.nodes[target_dependency_hex].get('targetProxy')
-        if target_proxy:
-            self.__unique_container_item_proxy(target_dependency_hex, target_proxy)
-        else:
-            raise XUniqueExit('PBXTargetDependency item "', target_dependency_hex,
-                              '" is invalid due to lack of "targetProxy" attribute')
-
-    def __unique_container_item_proxy(self, parent_hex, container_item_proxy_hex):
-        """PBXContainerItemProxy"""
-        self.vprint('uniquify PBXContainerItemProxy')
-        new_container_item_proxy_hex = self.__set_to_result(parent_hex, container_item_proxy_hex, ('isa', 'remoteInfo'))
-        cur_path = self.__result[container_item_proxy_hex]['path']
-        current_node = self.nodes[container_item_proxy_hex]
-        # re-calculate remoteGlobalIDString to a new length 32 MD5 digest
-        remote_global_id_hex = current_node.get('remoteGlobalIDString')
-        if not remote_global_id_hex:
-            self.__result.setdefault('uniquify_warning', []).append(
-                "PBXTargetDependency '{}' and its child PBXContainerItemProxy '{}' are not needed anymore, please remove their sections manually".format(
-                    self.__result[parent_hex]['new_key'], new_container_item_proxy_hex))
-        elif remote_global_id_hex not in self.__result.keys():
-            portal_hex = current_node['containerPortal']
-            portal_result_hex = self.__result.get(portal_hex)
-            if not portal_result_hex:
-                self.__result.setdefault('uniquify_warning', []).append(
-                    "PBXTargetDependency '{}' and its child PBXContainerItemProxy '{}' are not needed anymore, please remove their sections manually".format(
-                        self.__result[parent_hex]['new_key'], new_container_item_proxy_hex))
-            else:
-                portal_path = portal_result_hex['path']
-                new_rg_id_path = '{}+{}'.format(cur_path, portal_path)
-                self.__result.update({
-                    remote_global_id_hex: {'path': new_rg_id_path,
-                                           'new_key': md5_hex(new_rg_id_path),
-                                           'type': '{}#{}'.format(self.nodes[container_item_proxy_hex]['isa'],
-                                                                  'remoteGlobalIDString')
-                                           }
-                })
-
-    def __unique_build_phase(self, parent_hex, build_phase_hex):
-        """PBXSourcesBuildPhase PBXFrameworksBuildPhase PBXResourcesBuildPhase
-        PBXCopyFilesBuildPhase PBXHeadersBuildPhase PBXShellScriptBuildPhase
-        """
-        self.vprint('uniquify all kinds of PBX*BuildPhase')
-        current_node = self.nodes[build_phase_hex]
-        # no useful key in some build phase types, use its isa value
-        bp_type = current_node['isa']
-        if bp_type == 'PBXShellScriptBuildPhase':
-            cur_path_key = 'shellScript'
-        elif bp_type == 'PBXCopyFilesBuildPhase':
-            cur_path_key = ['name', 'dstSubfolderSpec', 'dstPath']
-            if not current_node.get('name'):
-                del cur_path_key[0]
-        else:
-            cur_path_key = bp_type
-        self.__set_to_result(parent_hex, build_phase_hex, cur_path_key)
-        self.vprint('uniquify PBXBuildFile')
-        for build_file_hex in current_node['files']:
-            self.__unique_build_file(build_phase_hex, build_file_hex)
-
-    def __unique_group_or_ref(self, parent_hex, group_ref_hex):
-        """PBXFileReference PBXGroup PBXVariantGroup PBXReferenceProxy"""
-        if self.nodes.get(group_ref_hex):
-            current_hex = group_ref_hex
-            if self.nodes[current_hex].get('name'):
-                cur_path_key = 'name'
-            elif self.nodes[current_hex].get('path'):
-                cur_path_key = 'path'
-            else:
-                # root PBXGroup has neither path nor name, give a new name 'PBXRootGroup'
-                cur_path_key = 'PBXRootGroup'
-            self.__set_to_result(parent_hex, current_hex, cur_path_key)
-            if self.nodes[current_hex].get('children'):
-                for child_hex in self.nodes[current_hex]['children']:
-                    self.__unique_group_or_ref(current_hex, child_hex)
-            if self.nodes[current_hex]['isa'] == 'PBXReferenceProxy':
-                self.__unique_container_item_proxy(parent_hex, self.nodes[current_hex]['remoteRef'])
-        else:
-            self.vprint("Group/FileReference/ReferenceProxy '", group_ref_hex, "' not found, it will be removed.")
-            self.__result.setdefault('to_be_removed', []).append(group_ref_hex)
-
-    def __unique_build_file(self, parent_hex, build_file_hex):
-        """PBXBuildFile"""
-        current_node = self.nodes.get(build_file_hex)
-        if not current_node:
-            self.__result.setdefault('to_be_removed', []).append(build_file_hex)
-        else:
-            file_ref_hex = current_node.get('fileRef')
-            if not file_ref_hex:
-                self.vprint("PBXFileReference '", file_ref_hex, "' not found, it will be removed.")
-                self.__result.setdefault('to_be_removed', []).append(build_file_hex)
-            else:
-                if self.__result.get(file_ref_hex):
-                    cur_path_key = self.__result[file_ref_hex]['path']
-                    self.__set_to_result(parent_hex, build_file_hex, cur_path_key)
-                else:
-                    self.vprint("PBXFileReference '", file_ref_hex, "' not found in PBXBuildFile '", build_file_hex,
-                                "'. To be removed.", sep='')
-                    self.__result.setdefault('to_be_removed', []).extend((build_file_hex, file_ref_hex))
-
-    def __unique_build_rules(self, parent_hex, build_rule_hex):
-        """PBXBuildRule"""
-        current_node = self.nodes.get(build_rule_hex)
-        if not current_node:
-            self.vprint("PBXBuildRule '", current_node, "' not found, it will be removed.")
-            self.__result.setdefault('to_be_removed', []).append(build_rule_hex)
-        else:
-            file_type = current_node['fileType']
-            cur_path_key = 'fileType'
-            if file_type == 'pattern.proxy':
-                cur_path_key = ('fileType', 'filePatterns')
-            self.__set_to_result(parent_hex, build_rule_hex, cur_path_key)
 
 
 class XUniqueExit(SystemExit):
